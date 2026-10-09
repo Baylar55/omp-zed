@@ -150,7 +150,7 @@ function buildAnthropicRequest(modelId, cleanMessages, tools, systemPrompt, maxT
                 messages.push({ role: "assistant", content: blocks });
         }
         else if (m.role === "tool") {
-            messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: m.tool_call_id, content: [{ type: "text", text: toolContent(m) || "" }] }] });
+            messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: m.tool_call_id, is_error: false, content: [{ type: "text", text: toolContent(m) || "" }] }] });
         }
     }
     const mappedTools = tools?.length ? tools.map((t) => ({ name: t.function.name, description: t.function.description, input_schema: t.function.parameters || { type: "object", properties: {} } })) : undefined;
@@ -178,6 +178,18 @@ function buildOpenAiRequest(modelId, cleanMessages, tools, systemPrompt, maxToke
     const mappedTools = tools?.length ? tools.map((t) => ({ type: "function", name: t.function.name, description: t.function.description, parameters: t.function.parameters || { type: "object", properties: {} } })) : undefined;
     return { model: modelId, stream: true, input, max_output_tokens: maxTokens, ...(systemPrompt ? { instructions: systemPrompt } : {}), ...(mappedTools?.length ? { tools: mappedTools } : {}) };
 }
+// Gemini 3 rejects replayed functionCall parts without their thoughtSignature; OpenAI chat has no field for it,
+// so remember it by tool-call id. Unknown ids (e.g. after a restart) fall back to Google's documented skip value.
+const SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
+const MAX_SIGNATURES = 500;
+const thoughtSignatures = new Map();
+export function rememberThoughtSignature(toolCallId, signature) {
+    if (!signature)
+        return;
+    if (thoughtSignatures.size >= MAX_SIGNATURES)
+        thoughtSignatures.delete(thoughtSignatures.keys().next().value);
+    thoughtSignatures.set(toolCallId, signature);
+}
 function buildGoogleRequest(modelId, cleanMessages, tools, systemPrompt, maxTokens) {
     const contents = [];
     const toolNameMap = new Map();
@@ -195,7 +207,8 @@ function buildGoogleRequest(modelId, cleanMessages, tools, systemPrompt, maxToke
             for (const tc of m.tool_calls || []) {
                 if (tc.id && tc.function?.name)
                     toolNameMap.set(tc.id, tc.function.name);
-                parts.push({ functionCall: { name: tc.function?.name || "unknown", args: safeJsonParse(tc.function?.arguments) || {} } });
+                const signature = (tc.id && thoughtSignatures.get(tc.id)) || SKIP_THOUGHT_SIGNATURE;
+                parts.push({ functionCall: { name: tc.function?.name || "unknown", args: safeJsonParse(tc.function?.arguments) || {} }, thoughtSignature: signature });
             }
             if (parts.length)
                 contents.push({ role: "model", parts });

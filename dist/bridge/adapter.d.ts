@@ -8,6 +8,7 @@ export declare function getZedProvider(modelId: string): string;
  * Extracts pure string text from an OpenAI message content field.
  */
 export declare function extractTextContent(content: OpenAIMessage["content"]): string;
+export declare function rememberThoughtSignature(toolCallId: string, signature: string | undefined): void;
 /**
  * Converts an OpenAI chat completions request into Zed's proprietary completions envelope.
  * Verified against live endpoint 2026-08-12 (cloud.zed.dev/completions).

@@ -1,7 +1,7 @@
 import * as http from "node:http";
 import * as crypto from "node:crypto";
 import { loadCredentials } from "../auth/credential-store.js";
-import { adaptOpenAIToZed, createChatCompletionResponse, createSSEChunk } from "./adapter.js";
+import { adaptOpenAIToZed, createChatCompletionResponse, createSSEChunk, rememberThoughtSignature } from "./adapter.js";
 import { ZedCloudClient } from "./client.js";
 import { getCachedZedModels } from "../models.js";
 import { recordTokenUsage } from "../usage/tracker.js";
@@ -162,6 +162,7 @@ export async function startBridgeServer(preferredPort = 38142) {
                                 }
                                 if (event.toolCall) {
                                     hasToolCalls = true;
+                                    rememberThoughtSignature(event.toolCall.id, event.toolCall.thoughtSignature);
                                     totalCompletionTokens += estTokens(event.toolCall.arguments);
                                     res.write(createSSEChunk(completionId, chatReq.model, {
                                         tool_calls: [

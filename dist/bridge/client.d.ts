@@ -11,6 +11,7 @@ export interface StreamEvent {
         name: string;
         arguments: string;
         index?: number;
+        thoughtSignature?: string;
     };
 }
 /**

@@ -4,12 +4,16 @@ import type { ZedAssistantRequest } from "./types.js";
 import { ZED_ENDPOINT, ZED_VERSION, type ZedRawModel } from "./types.js";
 import { decodeJwtExp, isEncryptedPayload, isPlausibleJwt, normalizeToken } from "../auth/token.js";
 
+interface GeminiCandidate {
+  content?: { parts?: Array<{ text?: string; thought?: boolean; thoughtSignature?: string; functionCall?: { name?: string; args?: unknown } }> };
+}
+
 export interface StreamEvent {
   text?: string;
   reasoning?: string;
   done?: boolean;
   error?: string;
-  toolCall?: { id: string; name: string; arguments: string; index?: number };
+  toolCall?: { id: string; name: string; arguments: string; index?: number; thoughtSignature?: string };
 }
 
 /**
@@ -122,6 +126,7 @@ export class ZedCloudClient {
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
     let currentToolCall: { id: string; name: string; arguments: string; index: number } | null = null;
+    let geminiToolIndex = 0;
 
     try {
       while (true) {
@@ -158,6 +163,17 @@ export class ZedCloudClient {
             }
           }
           const event = json && typeof json === "object" && "event" in json && json.event && typeof json.event === "object" ? (json.event as Record<string, unknown>) : (json as Record<string, unknown>);
+          if (event && Array.isArray(event.candidates)) {
+            // Google Gemini streamGenerateContent chunks
+            // Array.isArray narrowed to any[]; upstream shape is trusted (Google's documented stream format).
+            const candidate: GeminiCandidate | undefined = event.candidates[0];
+            const parts = candidate?.content?.parts ?? [];
+            for (const part of parts) {
+              if (part.functionCall) yield { toolCall: { index: geminiToolIndex++, id: crypto.randomUUID(), name: part.functionCall.name || "unknown", arguments: JSON.stringify(part.functionCall.args ?? {}), thoughtSignature: part.thoughtSignature } };
+              else if (part.text) yield part.thought ? { reasoning: part.text } : { text: part.text };
+            }
+            continue;
+          }
           if (!event || typeof event.type !== "string") {
             if (json && typeof json === "object" && ("error" in json || "message" in json)) {
               const errObj = "error" in json ? json.error : undefined;
@@ -167,6 +183,31 @@ export class ZedCloudClient {
             continue;
           }
           const type = event.type as string;
+          if (type.startsWith("response.") || type === "error") {
+            // OpenAI Responses API events
+            const item = event.item as { type?: string; call_id?: string; name?: string; arguments?: string } | undefined;
+            const delta = typeof event.delta === "string" ? event.delta : "";
+            if (type === "response.output_item.added" && item?.type === "function_call") {
+              currentToolCall = { index: typeof event.output_index === "number" ? event.output_index : 0, id: item.call_id || crypto.randomUUID(), name: item.name || "unknown", arguments: item.arguments || "" };
+            } else if (type === "response.function_call_arguments.delta") {
+              if (currentToolCall) currentToolCall.arguments += delta;
+            } else if (type === "response.output_item.done" && item?.type === "function_call") {
+              if (currentToolCall) {
+                if (item.arguments) currentToolCall.arguments = item.arguments;
+                yield { toolCall: { ...currentToolCall } }; currentToolCall = null;
+              }
+            } else if (type === "response.output_text.delta") {
+              if (delta) yield { text: delta };
+            } else if (type === "response.reasoning_summary_text.delta" || type === "response.reasoning_text.delta") {
+              if (delta) yield { reasoning: delta };
+            } else if (type === "response.failed" || type === "error") {
+              const r = event.response as { error?: { message?: string } } | undefined;
+              yield { error: r?.error?.message || (typeof event.message === "string" ? event.message : "Zed OpenAI request failed") }; return;
+            } else if (type === "response.completed" || type === "response.incomplete") {
+              yield { done: true }; return;
+            }
+            continue;
+          }
           if (type === "message_start") continue;
           else if (type === "content_block_start") {
             const block = event.content_block as { type?: string; id?: string; name?: string; input?: unknown } | undefined;
