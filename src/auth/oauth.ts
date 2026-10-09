@@ -83,10 +83,26 @@ function generateZedKeypair(): {
   return { publicKeyBase64Url, privateKeyPem: privateKey };
 }
 
-function decryptZedToken(encryptedTokenBase64Url: string, privateKeyPem: string): string {
+/**
+ * Zed encrypts the token with either OAEP-SHA256 (V1) or PKCS#1 v1.5 (V0).
+ * Node/Bun removed RSA_PKCS1_PADDING for private decryption (Marvin attack, CVE-2023-46809),
+ * so V0 is decrypted with raw RSA and unpadded by hand. Not constant-time; fine for a one-shot local login.
+ */
+export function decryptZedToken(encryptedTokenBase64Url: string, privateKeyPem: string): string {
   const buf = Buffer.from(encryptedTokenBase64Url.trim(), "base64url");
-  const dec = crypto.privateDecrypt({ key: privateKeyPem, padding: crypto.constants.RSA_PKCS1_PADDING }, buf);
-  return dec.toString("utf-8").trim();
+  try {
+    return crypto
+      .privateDecrypt({ key: privateKeyPem, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: "sha256" }, buf)
+      .toString("utf-8")
+      .trim();
+  } catch {
+    const em = crypto.privateDecrypt({ key: privateKeyPem, padding: crypto.constants.RSA_NO_PADDING }, buf);
+    const sep = em.indexOf(0, 2);
+    if (em[0] !== 0 || em[1] !== 2 || sep < 10) {
+      throw new Error("Unsupported Zed token encryption (neither OAEP-SHA256 nor PKCS#1 v1.5)");
+    }
+    return em.subarray(sep + 1).toString("utf-8").trim();
+  }
 }
 
 /**
