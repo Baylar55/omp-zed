@@ -50,7 +50,9 @@ export function openBrowser(targetUrl: string): void {
   }
   const platform = process.platform;
   if (platform === "win32") {
-    execFile("cmd.exe", ["/c", "start", "", targetUrl], () => {});
+    // cmd.exe's `start` treats `&` as a command separator and truncates the URL at the first one
+    // (dropping native_app_public_key). rundll32 takes the URL verbatim.
+    execFile("rundll32", ["url.dll,FileProtocolHandler", targetUrl], () => {});
   } else if (platform === "darwin") {
     execFile("open", [targetUrl], () => {});
   } else {
