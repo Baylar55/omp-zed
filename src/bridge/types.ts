@@ -38,6 +38,7 @@ export interface OpenAIChatRequest {
   stream?: boolean;
   max_tokens?: number;
   max_completion_tokens?: number;
+  reasoning_effort?: string;
 }
 
 export interface OpenAIChatChunk {

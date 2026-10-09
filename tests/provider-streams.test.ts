@@ -108,4 +108,45 @@ describe("request building", () => {
     expect(part("known").thoughtSignature).toBe("real-sig");
     expect(part("unknown").thoughtSignature).toBe("skip_thought_signature_validator");
   });
+
+  describe("reasoning_effort mapping", () => {
+    const pr = (model: string, effort: string | undefined, max_tokens?: number) =>
+      adaptOpenAIToZed({ model, reasoning_effort: effort, max_tokens, messages: [{ role: "user", content: "x" }] });
+
+    it("sends nothing when thinking is off", () => {
+      for (const m of ["claude-sonnet-4-6", "gpt-5.5", "gemini-3.5-flash"]) {
+        for (const e of [undefined, "none"]) {
+          const p = pr(m, e).provider_request;
+          expect(p.thinking ?? p.reasoning ?? p.generationConfig).toBeUndefined();
+        }
+      }
+    });
+
+    it("Claude 5+ uses adaptive thinking + output_config.effort (type=enabled is rejected)", () => {
+      const p = pr("claude-sonnet-5-5", "minimal").provider_request;
+      expect(p.thinking).toEqual({ type: "adaptive" });
+      expect(p.output_config).toEqual({ effort: "low" });
+    });
+
+    it("Claude 4.x uses a token budget below max_tokens and forces temperature 1", () => {
+      const req = adaptOpenAIToZed({ model: "claude-sonnet-4-6", reasoning_effort: "xhigh", max_tokens: 8000, temperature: 0.2, messages: [{ role: "user", content: "x" }] });
+      expect(req.provider_request.thinking).toEqual({ type: "enabled", budget_tokens: 7999 });
+      expect(req.temperature).toBe(1);
+      expect(pr("claude-sonnet-4-6", "high", 1000).provider_request.thinking).toBeUndefined();
+    });
+
+    it("GPT clamps to values each model accepts", () => {
+      expect(pr("gpt-5.5", "minimal").provider_request.reasoning).toEqual({ effort: "low", summary: "auto" });
+      expect(pr("gpt-5.5", "max").provider_request.reasoning).toEqual({ effort: "xhigh", summary: "auto" });
+      expect(pr("gpt-5-mini", "xhigh").provider_request.reasoning).toEqual({ effort: "high", summary: "auto" });
+      expect(pr("gpt-5-mini", "minimal").provider_request.reasoning).toEqual({ effort: "minimal", summary: "auto" });
+    });
+
+    it("Gemini uses uppercase thinkingLevel; Pro has no MINIMAL", () => {
+      const level = (m: string, e: string) => (pr(m, e).provider_request.generationConfig as { thinkingConfig: { thinkingLevel: string; includeThoughts: boolean } }).thinkingConfig;
+      expect(level("gemini-3.5-flash", "minimal")).toEqual({ thinkingLevel: "MINIMAL", includeThoughts: true });
+      expect(level("gemini-3.1-pro-preview", "minimal").thinkingLevel).toBe("LOW");
+      expect(level("gemini-3.5-flash", "xhigh").thinkingLevel).toBe("HIGH");
+    });
+  });
 });

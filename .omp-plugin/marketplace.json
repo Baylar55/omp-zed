@@ -6,12 +6,12 @@
   },
   "metadata": {
     "description": "Zed Pro and Student Plan integration for Oh My Pi",
-    "version": "1.0.8"
+    "version": "1.0.9"
   },
   "plugins": [
     {
       "name": "zed",
-      "version": "1.0.8",
+      "version": "1.0.9",
       "description": "Zed Pro & Student model provider with OAuth login and live quota tracking",
       "source": "./",
       "category": "development",

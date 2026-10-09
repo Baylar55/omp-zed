@@ -221,6 +221,37 @@ function buildGoogleRequest(modelId, cleanMessages, tools, systemPrompt, maxToke
     const mappedTools = tools?.length ? [{ functionDeclarations: tools.map((t) => ({ name: t.function.name, description: t.function.description, parameters: t.function.parameters || { type: "OBJECT", properties: {} } })) }] : undefined;
     return { model: modelId, stream: true, contents, max_output_tokens: maxTokens, ...(systemPrompt ? { systemInstruction: { parts: [{ text: systemPrompt }] } } : {}), ...(mappedTools?.length ? { tools: mappedTools } : {}) };
 }
+const CLAUDE_BUDGETS = { minimal: 1024, low: 2048, medium: 8192, high: 16384, xhigh: 32000, max: 32000 };
+const CLAUDE_ADAPTIVE_EFFORT = { minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" };
+const OPENAI_EFFORT = { minimal: "low", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "xhigh" };
+const OPENAI_EFFORT_MINI = { minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "high", max: "high" };
+const GEMINI_LEVEL = { minimal: "MINIMAL", low: "LOW", medium: "MEDIUM", high: "HIGH", xhigh: "HIGH", max: "HIGH" };
+const GEMINI_LEVEL_PRO = { ...GEMINI_LEVEL, minimal: "LOW" };
+/**
+ * Maps omp's `reasoning_effort` onto each provider's native thinking fields.
+ * Value sets verified against live Zed endpoint: Claude 5+ rejects `thinking.type=enabled` (adaptive + output_config.effort only),
+ * gpt-5-mini/nano reject xhigh, gpt-5.5+ reject minimal, Gemini Pro rejects MINIMAL.
+ */
+function thinkingFields(provider, modelId, effort, maxTokens) {
+    if (!effort || effort === "none")
+        return null;
+    if (provider === "open_ai") {
+        const table = /^gpt-5-(mini|nano)/.test(modelId) ? OPENAI_EFFORT_MINI : OPENAI_EFFORT;
+        const mapped = table[effort];
+        return mapped ? { reasoning: { effort: mapped, summary: "auto" } } : null;
+    }
+    if (provider === "google") {
+        const level = (modelId.includes("pro") ? GEMINI_LEVEL_PRO : GEMINI_LEVEL)[effort];
+        return level ? { generationConfig: { thinkingConfig: { thinkingLevel: level, includeThoughts: true } } } : null;
+    }
+    const major = Number(/^claude-[a-z]+-(\d+)/.exec(modelId)?.[1] ?? 0);
+    if (major >= 5) {
+        const mapped = CLAUDE_ADAPTIVE_EFFORT[effort];
+        return mapped ? { thinking: { type: "adaptive" }, output_config: { effort: mapped } } : null;
+    }
+    const budget = Math.min(CLAUDE_BUDGETS[effort] ?? 0, maxTokens - 1);
+    return budget >= 1024 ? { thinking: { type: "enabled", budget_tokens: budget } } : null;
+}
 /**
  * Converts an OpenAI chat completions request into Zed's proprietary completions envelope.
  * Verified against live endpoint 2026-08-12 (cloud.zed.dev/completions).
@@ -231,7 +262,7 @@ export function adaptOpenAIToZed(req) {
     const { cleanMessages, systemPrompt } = extractSystemAndMessages(req.messages);
     const tools = Array.isArray(req.tools) && req.tools.length > 0 ? req.tools : undefined;
     const maxTokens = req.max_tokens || req.max_completion_tokens || 16384;
-    const temperature = req.temperature ?? 1.0;
+    const effort = req.reasoning_effort;
     let providerRequest;
     if (provider === "open_ai") {
         providerRequest = buildOpenAiRequest(modelId, cleanMessages, tools, systemPrompt, maxTokens);
@@ -242,6 +273,10 @@ export function adaptOpenAIToZed(req) {
     else {
         providerRequest = buildAnthropicRequest(modelId, cleanMessages, tools, systemPrompt, maxTokens);
     }
+    const thinking = thinkingFields(provider, modelId, effort, maxTokens);
+    Object.assign(providerRequest, thinking);
+    // Anthropic only allows thinking with temperature 1.
+    const temperature = provider === "anthropic" && thinking ? 1.0 : (req.temperature ?? 1.0);
     return {
         thread_id: crypto.randomUUID(),
         prompt_id: crypto.randomUUID(),
